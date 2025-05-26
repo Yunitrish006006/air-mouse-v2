@@ -3,6 +3,7 @@ import mediapipe as mp
 import numpy as np
 import pyautogui
 import time
+import argparse
 
 # 設定 MediaPipe 手部追蹤
 mp_hands = mp.solutions.hands
@@ -28,12 +29,12 @@ class Gestures:
     CLICK_TIME_THRESHOLD = 0.2
     
     # 手勢定義
-    MOVE = "移動"          # 食指伸直，其他手指彎曲
-    LEFT_CLICK = "左鍵點擊"  # 食指和中指伸直並快速合併
-    RIGHT_CLICK = "右鍵點擊"  # 食指和大拇指伸直並快速碰觸
-    SCROLL_UP = "上滾動"     # 所有手指伸直向上移動
-    SCROLL_DOWN = "下滾動"   # 所有手指伸直向下移動
-    DRAG = "拖曳"          # 食指和中指伸直保持固定距離
+    MOVE = "move"          # 食指伸直，其他手指彎曲
+    LEFT_CLICK = "left click"  # 食指和中指伸直並快速合併
+    RIGHT_CLICK = "right click"  # 食指和大拇指伸直並快速碰觸
+    SCROLL_UP = "scroll up"     # 所有手指伸直向上移動
+    SCROLL_DOWN = "scroll down"   # 所有手指伸直向下移動
+    DRAG = "drag"          # 食指和中指伸直保持固定距離
 
 class AirMouse:
     def __init__(self):
@@ -43,6 +44,9 @@ class AirMouse:
         self.prev_gesture = None
         self.gesture_start_time = 0
         self.is_dragging = False
+        
+        # 控制畫面預覽的變數
+        self.show_preview = True
         
         # 手勢狀態追蹤
         self.prev_fingers_up = [0, 0, 0, 0, 0]
@@ -214,32 +218,35 @@ class AirMouse:
                     break
                 
                 # 水平翻轉畫面以獲得鏡像效果
-                frame = cv2.flip(frame, 1)
+                # frame = cv2.flip(frame, 1)
                 
                 # 將BGR轉換為RGB用於MediaPipe處理
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 results = self.hands.process(rgb_frame)
                 
-                # 繪製交互區域
-                frame_h, frame_w, _ = frame.shape
-                margin_x = int(frame_w * (1 - CAMERA_AREA_RATIO) / 2)
-                margin_y = int(frame_h * (1 - CAMERA_AREA_RATIO) / 2)
-                cv2.rectangle(frame, 
-                            (margin_x, margin_y), 
-                            (frame_w - margin_x, frame_h - margin_y), 
-                            (0, 255, 0), 2)
+                # 只有當show_preview為True時才處理和顯示畫面
+                if self.show_preview:
+                    # 繪製交互區域
+                    frame_h, frame_w, _ = frame.shape
+                    margin_x = int(frame_w * (1 - CAMERA_AREA_RATIO) / 2)
+                    margin_y = int(frame_h * (1 - CAMERA_AREA_RATIO) / 2)
+                    cv2.rectangle(frame, 
+                                (margin_x, margin_y), 
+                                (frame_w - margin_x, frame_h - margin_y), 
+                                (0, 255, 0), 2)
                 
                 if results.multi_hand_landmarks:
                     # 只處理第一隻手
                     hand_landmarks = results.multi_hand_landmarks[0]
                     
-                    # 在畫面上繪製手部標記點
-                    mp_drawing.draw_landmarks(
-                        frame,
-                        hand_landmarks,
-                        mp_hands.HAND_CONNECTIONS,
-                        mp_drawing_styles.get_default_hand_landmarks_style(),
-                        mp_drawing_styles.get_default_hand_connections_style())
+                    # 只有當show_preview為True時才在畫面上繪製手部標記點
+                    if self.show_preview:
+                        mp_drawing.draw_landmarks(
+                            frame,
+                            hand_landmarks,
+                            mp_hands.HAND_CONNECTIONS,
+                            mp_drawing_styles.get_default_hand_landmarks_style(),
+                            mp_drawing_styles.get_default_hand_connections_style())
                     
                     # 檢測手勢
                     gesture = self.detect_gesture(hand_landmarks, frame.shape)
@@ -248,18 +255,27 @@ class AirMouse:
                     if gesture:
                         self.control_mouse(hand_landmarks, frame.shape, gesture)
                         
-                        # 在畫面上顯示當前手勢
-                        cv2.putText(frame, f"手勢: {gesture}", (10, 30), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                        # 只有當show_preview為True時才在畫面上顯示當前手勢
+                        if self.show_preview:
+                            cv2.putText(frame, f"gesture: {gesture}", (10, 30), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                 
-                # 顯示畫面
-                cv2.putText(frame, "按ESC退出", (10, frame_h - 10), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                cv2.imshow('Air Mouse', frame)
+                # 只有當show_preview為True時才顯示畫面
+                if self.show_preview:
+                    frame_h, frame_w, _ = frame.shape
+                    cv2.putText(frame, "esc: exit \nP:switch camera preview", (10, frame_h - 10), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    cv2.imshow('Air Mouse', frame)
                 
                 # 檢測按鍵
-                if cv2.waitKey(5) & 0xFF == 27:  # ESC鍵
+                key = cv2.waitKey(5) & 0xFF
+                if key == 27:  # ESC鍵
                     break
+                elif key == ord('p') or key == ord('P'):  # P鍵切換預覽
+                    self.show_preview = not self.show_preview
+                    if not self.show_preview:
+                        cv2.destroyWindow('Air Mouse')
+                    print(f"畫面預覽: {'開啟' if self.show_preview else '關閉'}")
         
         finally:
             # 釋放資源
@@ -270,6 +286,11 @@ class AirMouse:
                 pyautogui.mouseUp()  # 確保拖曳動作結束
 
 if __name__ == "__main__":
+    # 解析命令行參數
+    parser = argparse.ArgumentParser(description="Air Mouse - 使用手勢控制滑鼠")
+    parser.add_argument('--no-preview', action='store_true', help='啟動時不顯示預覽畫面 (提升效能)')
+    args = parser.parse_args()
+    
     print("啟動Air Mouse...")
     print("請將手放在攝像頭前的桌面上")
     print("- 只伸出食指：移動滑鼠")
@@ -278,6 +299,10 @@ if __name__ == "__main__":
     print("- 食指和中指伸直保持距離：拖曳")
     print("- 五指伸直上下移動：滾動")
     print("- 按ESC鍵退出")
+    print("- 按P鍵切換畫面預覽（關閉預覽可提升效能）")
     
     air_mouse = AirMouse()
+    if args.no_preview:
+        air_mouse.show_preview = False
+        print("已啟動高效能模式（無預覽）")
     air_mouse.run()
