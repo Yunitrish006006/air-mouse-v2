@@ -1,7 +1,0 @@
-opencv-python
-opencv-contrib-python
-numpy
-mediapipe
-pyautogui
-tensorflow
-matplotlib
