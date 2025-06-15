@@ -6,3 +6,5 @@ pyautogui
 tensorflow
 matplotlib
 pillow
+keyboard
+pyinstaller
