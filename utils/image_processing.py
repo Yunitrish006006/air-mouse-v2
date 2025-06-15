@@ -104,16 +104,31 @@ class ImageProcessor:
             return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), False
     
     @staticmethod
-    def draw_interaction_area(frame, camera_area_ratio=0.6):
-        """在影像上繪製交互區域"""
+    def draw_interaction_area(frame, camera_area_ratio=0.6, vertical_offset=-0.1):
+        """在影像上繪製交互區域
+        Args:
+            frame: 影像框架
+            camera_area_ratio: 偵測區域比例
+            vertical_offset: 垂直偏移（負值向上移動，正值向下移動）
+        """
         frame_h, frame_w, _ = frame.shape
         margin_x = int(frame_w * (1 - camera_area_ratio) / 2)
         margin_y = int(frame_h * (1 - camera_area_ratio) / 2)
+        
+        # 添加垂直偏移，讓框向上移動
+        offset_pixels = int(frame_h * vertical_offset)
+        top_y = margin_y + offset_pixels
+        bottom_y = frame_h - margin_y + offset_pixels
+        
+        # 確保框不會超出畫面邊界
+        top_y = max(0, top_y)
+        bottom_y = min(frame_h, bottom_y)
+        
         cv2.rectangle(frame, 
-                     (margin_x, margin_y), 
-                     (frame_w - margin_x, frame_h - margin_y), 
+                     (margin_x, top_y), 
+                     (frame_w - margin_x, bottom_y), 
                      (0, 255, 0), 2)
-        return margin_x, margin_y
+        return margin_x, top_y, bottom_y
     
     @staticmethod
     def draw_info_text(frame, fps, rotation, flip_h, flip_v, gesture=None):

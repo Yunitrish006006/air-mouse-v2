@@ -36,22 +36,31 @@ class MouseController:
         
         # 獲取食指尖端的位置
         index_finger = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-        
-        # 將攝像頭畫面座標映射到螢幕座標
+          # 將攝像頭畫面座標映射到螢幕座標
         cam_width, cam_height = frame_shape[1], frame_shape[0]
         margin_x = cam_width * (1 - CAMERA_AREA_RATIO) / 2
         margin_y = cam_height * (1 - CAMERA_AREA_RATIO) / 2
+        
+        # 添加垂直偏移
+        offset_pixels = cam_height * CAMERA_VERTICAL_OFFSET
+        top_y = margin_y + offset_pixels
+        bottom_y = cam_height - margin_y + offset_pixels
+        
+        # 確保邊界
+        top_y = max(0, top_y)
+        bottom_y = min(cam_height, bottom_y)
         
         # 檢查是否在交互區域內
         finger_x = index_finger.x * cam_width
         finger_y = index_finger.y * cam_height
         in_area_x = margin_x < finger_x < (cam_width - margin_x)
-        in_area_y = margin_y < finger_y < (cam_height - margin_y)
+        in_area_y = top_y < finger_y < bottom_y
         
         if in_area_x and in_area_y:
-            # 直接映射座標，減少計算延遲
+            # 使用偏移後的區域進行座標映射
+            area_height = bottom_y - top_y
             screen_x = int(SCREEN_WIDTH * (finger_x - margin_x) / (cam_width * CAMERA_AREA_RATIO))
-            screen_y = int(SCREEN_HEIGHT * (finger_y - margin_y) / (cam_height * CAMERA_AREA_RATIO))
+            screen_y = int(SCREEN_HEIGHT * (finger_y - top_y) / area_height)
             
             # 確保座標在螢幕範圍內
             screen_x = max(0, min(SCREEN_WIDTH - 1, screen_x))
@@ -184,7 +193,7 @@ class AirMouse:
         
         # 繪製交互區域
         if self.show_preview:
-            self.image_processor.draw_interaction_area(frame, CAMERA_AREA_RATIO)
+            self.image_processor.draw_interaction_area(frame, CAMERA_AREA_RATIO, CAMERA_VERTICAL_OFFSET)
           # 處理手勢
         gesture = None
         if results.multi_hand_landmarks:
