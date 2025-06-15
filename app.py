@@ -16,20 +16,23 @@ from ui import AirMouseUI
 
 def print_welcome_message():
     """顯示歡迎信息"""
+    print("=== Air Mouse v2.0 ===")
     print("啟動Air Mouse...")
-    print("請將手放在攝像頭前的桌面上")
-    print("- 只伸出食指：移動滑鼠")
-    print("- 食指和中指伸直並靠近：左鍵點擊")
-    print("- 食指和大拇指伸直並靠近：右鍵點擊")
-    print("- 食指和中指伸直保持距離：拖曳")
-    print("- 五指伸直上下移動：滾動")
-    print("- 按ESC鍵退出")
-    print("- 按P鍵切換畫面預覽（關閉預覽可提升效能）")
-    print("- 按+/-鍵增加/減少處理頻率（影響效能和反應速度）")
-    print("- 按R鍵旋轉畫面90度（調整手部方向）")
-    print("- 按H鍵水平翻轉畫面")
-    print("- 按V鍵垂直翻轉畫面")
-    print("- 按0鍵重置畫面方向")
+    print()
+    print("操作說明：")
+    print("• 食指移動：控制滑鼠移動")
+    print("• 空白鍵：左鍵點擊")
+    print()
+    print("注意事項：")
+    print("- 保持食指在綠色框內")
+    print("- 按下鍵盤空白鍵進行點擊")
+    print("- 其他手指狀態不影響控制")
+    print("- 可在UI中調整畫面方向與參數")
+    print()
+    print("啟動模式：")
+    print("- 預設：圖形化介面模式（推薦）")
+    print("- 使用 --no-preview 參數：命令行模式（高效能）")
+    print()
 
 
 def run_cli_mode(args):
@@ -88,7 +91,7 @@ def main():
     # 解析命令行參數
     parser = argparse.ArgumentParser(description="Air Mouse - 使用手勢控制滑鼠")
     parser.add_argument('--no-preview', action='store_true', 
-                        help='啟動時不顯示預覽畫面 (提升效能)')
+                        help='使用命令行模式（無GUI，提升效能）')
     parser.add_argument('--fps', type=int, default=50, 
                         help='設定處理頻率 (10-100 之間，數值越小越流暢但CPU負擔越重)')
     parser.add_argument('--no-gpu', action='store_true', 
@@ -106,8 +109,10 @@ def main():
     
     # 選擇運行模式
     if args.no_preview:
+        print("啟動命令行模式...")
         run_cli_mode(args)
     else:
+        print("啟動圖形化介面模式...")
         run_gui_mode(args)
 
 

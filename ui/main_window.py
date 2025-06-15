@@ -13,7 +13,7 @@ import mediapipe as mp
 from core.air_mouse import AirMouse
 from core.config import (
     UI_WINDOW_SIZE, UI_BG_COLOR, VIDEO_DISPLAY_SIZE,
-    CAMERA_AREA_RATIO
+    CAMERA_AREA_RATIO, CAMERA_VERTICAL_OFFSET
 )
 
 # MediaPipe 繪圖工具
@@ -79,6 +79,10 @@ class AirMouseUI:
         # 啟動/停止按鈕
         self.start_button = ttk.Button(parent, text="啟動", command=self.toggle_tracking)
         self.start_button.pack(fill=tk.X, pady=5)
+        
+        # 空白鍵點擊按鈕（用於測試）
+        self.click_button = ttk.Button(parent, text="測試點擊", command=self.test_click)
+        self.click_button.pack(fill=tk.X, pady=5)
     
     def _create_performance_settings(self, parent):
         """建立效能設定介面"""
@@ -118,18 +122,23 @@ class AirMouseUI:
         
         self.gpu_label = ttk.Label(status_frame, text="GPU: 檢測中...")
         self.gpu_label.pack()
+        
+        self.gesture_label = ttk.Label(status_frame, text="手勢: 無")
+        self.gesture_label.pack()
     
     def _create_gesture_help(self, parent):
         """建立手勢說明介面"""
-        gesture_frame = ttk.LabelFrame(parent, text="手勢說明", padding=10)
+        gesture_frame = ttk.LabelFrame(parent, text="操作說明", padding=10)
         gesture_frame.pack(fill=tk.X, pady=10)
         
         gestures_text = """
-• 食指：移動滑鼠
-• 食指+中指靠近：左鍵點擊
-• 食指+大拇指靠近：右鍵點擊
-• 食指+中指分開：拖曳
-• 五指伸直：滾動
+• 食指移動：控制滑鼠移動
+• 空白鍵：左鍵點擊
+
+注意：
+- 保持食指在綠色框內
+- 按下鍵盤空白鍵進行點擊
+- 其他手指狀態不影響控制
         """
         ttk.Label(gesture_frame, text=gestures_text, justify=tk.LEFT).pack()
     
@@ -147,6 +156,13 @@ class AirMouseUI:
         self.fps_label.config(text=f"{fps} FPS")
         if hasattr(self.air_mouse, 'frame_process_interval'):
             self.air_mouse.frame_process_interval = int(1000 / fps)
+    
+    def test_click(self):
+        """測試點擊功能"""
+        import pyautogui
+        current_pos = pyautogui.position()
+        pyautogui.click(current_pos.x, current_pos.y, _pause=False)
+        print(f"[UI TEST] 測試點擊: ({current_pos.x}, {current_pos.y})")
     
     def toggle_tracking(self):
         """切換追蹤狀態"""
@@ -171,6 +187,7 @@ class AirMouseUI:
         self.start_button.config(text="啟動")
         self.status_label.config(text="已停止")
         self.video_label.config(image='', text="攝像頭未啟動")
+        self.gesture_label.config(text="手勢: 無")
     
     def video_loop(self):
         """視頻處理主循環"""
@@ -180,36 +197,15 @@ class AirMouseUI:
                 if not success:
                     break
                 
-                # 儲存原始畫面形狀以便後續座標調整
-                original_shape = frame.shape
+                # 處理一幀影像
+                processed_frame, gesture = self.air_mouse.process_frame(frame)
                 
-                # 調整畫面方向
-                frame = self.air_mouse.adjust_frame_orientation(frame)
-                rotated_shape = frame.shape
-                
-                current_time = time.time() * 1000
-                should_process = (current_time - self.air_mouse.last_process_time) >= self.air_mouse.frame_process_interval
-                
-                if should_process:
-                    self.air_mouse.last_process_time = current_time
-                      # 處理影像
-                    rgb_frame = self._process_frame(frame)
-                    
-                    # MediaPipe 手部檢測
-                    results = self.air_mouse.gesture_detector.process_frame(rgb_frame)
-                    
-                    # 繪製交互區域
-                    self._draw_interaction_area(frame)
-                    
-                    # 處理手部檢測結果
-                    if results.multi_hand_landmarks:
-                        self._process_hand_landmarks(results.multi_hand_landmarks[0], frame, original_shape, rotated_shape)
-                    
-                    # 顯示FPS和方向信息
-                    self._draw_info_overlay(frame)
+                # 更新手勢顯示
+                gesture_text = f"手勢: {gesture if gesture else '無'}"
+                self.root.after(0, lambda text=gesture_text: self.gesture_label.config(text=text))
                 
                 # 更新UI中的影像
-                self.update_video_display(frame)
+                self.update_video_display(processed_frame)
                 
         except Exception as e:
             print(f"視頻處理錯誤: {e}")
@@ -218,85 +214,24 @@ class AirMouseUI:
             self.root.after(0, lambda: self.start_button.config(text="啟動"))
             self.root.after(0, lambda: self.status_label.config(text="已停止"))
     
-    def _process_frame(self, frame):
-        """處理影像幀"""
-        if self.air_mouse.use_gpu and self.air_mouse.gpu_detector.opencv_gpu_available:
-            try:
-                gpu_frame = cv2.cuda_GpuMat()
-                gpu_frame.upload(frame)
-                frame_processed = gpu_frame.download()
-                return cv2.cvtColor(frame_processed, cv2.COLOR_BGR2RGB)
-            except Exception as e:
-                print(f"GPU 處理錯誤：{e}，切換到 CPU 模式")
-                self.air_mouse.gpu_detector.opencv_gpu_available = False
-                return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        else:
-            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    
-    def _draw_interaction_area(self, frame):
-        """繪製交互區域"""
-        frame_h, frame_w, _ = frame.shape
-        margin_x = int(frame_w * (1 - CAMERA_AREA_RATIO) / 2)
-        margin_y = int(frame_h * (1 - CAMERA_AREA_RATIO) / 2)
-        cv2.rectangle(frame, (margin_x, margin_y), 
-                     (frame_w - margin_x, frame_h - margin_y), (0, 255, 0), 2)
-    
-    def _process_hand_landmarks(self, hand_landmarks, frame, original_shape, rotated_shape):
-        """處理手部特徵點"""
-        # 根據畫面旋轉調整手部特徵點
-        if (self.air_mouse.frame_rotation != 0 or 
-            self.air_mouse.flip_horizontal or 
-            self.air_mouse.flip_vertical):
-            hand_landmarks = self.air_mouse.adjust_hand_landmarks_for_rotation(
-                hand_landmarks, original_shape, rotated_shape)
-        
-        # 繪製手部標記點
-        mp_drawing.draw_landmarks(
-            frame, hand_landmarks, mp_hands.HAND_CONNECTIONS,
-            mp_drawing_styles.get_default_hand_landmarks_style(),
-            mp_drawing_styles.get_default_hand_connections_style())
-          # 檢測手勢
-        gesture = self.air_mouse.gesture_detector.detect_gesture(hand_landmarks, frame.shape)
-        
-        # 控制滑鼠
-        if gesture:
-            self.air_mouse.mouse_controller.control_mouse(hand_landmarks, frame.shape, gesture)
-            cv2.putText(frame, f"Gesture: {gesture}", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    
-    def _draw_info_overlay(self, frame):
-        """繪製資訊覆蓋層"""
-        frame_h, frame_w, _ = frame.shape
-        
-        # 顯示FPS
-        fps = int(1000 / self.air_mouse.frame_process_interval)
-        cv2.putText(frame, f"FPS: ~{fps}", (frame_w - 120, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        
-        # 顯示方向信息
-        orientation_info = f"Rot:{self.air_mouse.frame_rotation}"
-        if self.air_mouse.flip_horizontal:
-            orientation_info += " H"
-        if self.air_mouse.flip_vertical:
-            orientation_info += " V"
-        cv2.putText(frame, orientation_info, (frame_w - 120, 60), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-    
     def update_video_display(self, frame):
         """更新視頻顯示"""
-        # 將OpenCV影像轉換為tkinter可顯示的格式
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame_pil = Image.fromarray(frame_rgb)
-        
-        # 調整影像大小以適應顯示區域
-        frame_pil = frame_pil.resize(VIDEO_DISPLAY_SIZE, Image.Resampling.LANCZOS)
-        
-        # 轉換為PhotoImage
-        photo = ImageTk.PhotoImage(frame_pil)
-        
-        # 更新顯示（使用after方法確保線程安全）
-        self.root.after(0, lambda: self.video_label.config(image=photo, text=""))
-        self.root.after(0, lambda: setattr(self.video_label, 'image', photo))  # 保持引用
+        try:
+            # 將OpenCV影像轉換為tkinter可顯示的格式
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_pil = Image.fromarray(frame_rgb)
+            
+            # 調整影像大小以適應顯示區域
+            frame_pil = frame_pil.resize(VIDEO_DISPLAY_SIZE, Image.Resampling.LANCZOS)
+            
+            # 轉換為PhotoImage
+            photo = ImageTk.PhotoImage(frame_pil)
+            
+            # 更新顯示（使用after方法確保線程安全）
+            self.root.after(0, lambda: self.video_label.config(image=photo, text=""))
+            self.root.after(0, lambda: setattr(self.video_label, 'image', photo))  # 保持引用
+        except Exception as e:
+            print(f"視頻顯示錯誤: {e}")
     
     def rotate_frame(self):
         """旋轉畫面"""
@@ -334,7 +269,7 @@ class AirMouseUI:
         gpu_status = self.air_mouse.gpu_detector.get_status_text()
         self.gpu_label.config(text=gpu_status)
     
-    def set_initial_settings(self, rotation=0, flip_h=False, flip_v=False, fps=50, use_gpu=True):
+    def set_initial_settings(self, rotation=0, flip_h=True, flip_v=True, fps=50, use_gpu=True):
         """設定初始參數"""
         self.air_mouse.frame_rotation = rotation
         self.air_mouse.flip_horizontal = flip_h
@@ -360,4 +295,16 @@ class AirMouseUI:
     
     def run(self):
         """啟動主循環"""
+        # 設定預設值（與 air_mouse.py 中一致）
+        self.set_initial_settings()
         self.root.mainloop()
+
+
+def main():
+    """主程式入口點"""
+    app = AirMouseUI()
+    app.run()
+
+
+if __name__ == "__main__":
+    main()

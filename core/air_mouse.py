@@ -4,6 +4,8 @@ Air Mouse 主要功能模組
 import cv2
 import time
 import pyautogui
+import keyboard
+import threading
 from collections import deque
 import sys
 import os
@@ -21,11 +23,9 @@ class MouseController:
     
     def __init__(self, smoothing_factor=DEFAULT_SMOOTHING_FACTOR):
         self.smoothing_factor = smoothing_factor
-        self.is_dragging = False
-        self.position_history = deque(maxlen=3)
         self.last_move_time = 0
         self.min_move_interval = 8  # 最小移動間隔(毫秒)，提高響應速度
-    
+
     def control_mouse(self, hand_landmarks, frame_shape, gesture):
         """根據手的位置和手勢控制滑鼠"""
         current_time = time.time() * 1000
@@ -36,7 +36,8 @@ class MouseController:
         
         # 獲取食指尖端的位置
         index_finger = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-          # 將攝像頭畫面座標映射到螢幕座標
+        
+        # 將攝像頭畫面座標映射到螢幕座標
         cam_width, cam_height = frame_shape[1], frame_shape[0]
         margin_x = cam_width * (1 - CAMERA_AREA_RATIO) / 2
         margin_y = cam_height * (1 - CAMERA_AREA_RATIO) / 2
@@ -74,41 +75,22 @@ class MouseController:
                 target_y = int(current_y + (screen_y - current_y) * 0.8)
                 self._handle_gesture(gesture, target_x, target_y)
                 self.last_move_time = current_time
-            else:
-                # 其他手勢直接使用精確座標
+            elif gesture == Gestures.LEFT_CLICK:
+                # 點擊使用精確座標
                 self._handle_gesture(gesture, screen_x, screen_y)
-    
+
     def _handle_gesture(self, gesture, x, y):
         """處理手勢動作"""
         if gesture == Gestures.MOVE:
-            if self.is_dragging:
-                self.is_dragging = False
-                pyautogui.mouseUp()
-            pyautogui.moveTo(x, y, _pause=False)  # 明確禁用暫停
-        
-        elif gesture == Gestures.LEFT_CLICK:
-            pyautogui.click(x, y, _pause=False)
-        
-        elif gesture == Gestures.RIGHT_CLICK:
-            pyautogui.rightClick(x, y, _pause=False)
-        
-        elif gesture == Gestures.DRAG:
+            # 移動模式：只移動滑鼠指標
             pyautogui.moveTo(x, y, _pause=False)
-            if not self.is_dragging:
-                self.is_dragging = True
-                pyautogui.mouseDown(_pause=False)
-        
-        elif gesture == Gestures.SCROLL_UP:
-            pyautogui.scroll(5, _pause=False)
-        
-        elif gesture == Gestures.SCROLL_DOWN:
-            pyautogui.scroll(-5, _pause=False)
-    
+        elif gesture == Gestures.LEFT_CLICK:
+            # 左鍵點擊
+            pyautogui.click(x, y, _pause=False)
+
     def cleanup(self):
         """清理資源"""
-        if self.is_dragging:
-            pyautogui.mouseUp()
-            self.is_dragging = False
+        pass
 
 class AirMouse:
     """Air Mouse 主要功能類"""
@@ -130,7 +112,9 @@ class AirMouse:
         self.show_preview = True
         self.use_gpu = True
         self.frame_process_interval = DEFAULT_FRAME_PROCESS_INTERVAL
-        self.last_process_time = 0        # 畫面方向控制（預設水平和垂直翻轉）
+        self.last_process_time = 0
+        
+        # 畫面方向控制（預設水平和垂直翻轉）
         self.frame_rotation = 0
         self.flip_horizontal = True  # 預設開啟水平翻轉
         self.flip_vertical = True   # 預設開啟垂直翻轉
@@ -143,27 +127,47 @@ class AirMouse:
         
         # 低功耗模式
         self.low_power_mode = False
-    
+        
+        # 按鍵監聽
+        self.space_pressed = False
+        self.setup_keyboard_listener()
+
+    def setup_keyboard_listener(self):
+        """設定全域按鍵監聽器"""
+        def on_space_press():
+            if not self.space_pressed:
+                self.space_pressed = True
+                # 在目前滑鼠位置點擊左鍵
+                current_pos = pyautogui.position()
+                pyautogui.click(current_pos.x, current_pos.y, _pause=False)
+                print(f"[DEBUG] 空白鍵點擊: ({current_pos.x}, {current_pos.y})")
+                # 重置狀態
+                threading.Timer(0.1, lambda: setattr(self, 'space_pressed', False)).start()
+        
+        # 註冊空白鍵監聽
+        keyboard.on_press_key('space', lambda _: on_space_press())
+
     @property
     def opencv_gpu_available(self):
         return self.gpu_detector.opencv_gpu_available
-    
+
     @property
     def tf_gpu_available(self):
         return self.gpu_detector.tf_gpu_available
-    
+
     def adjust_frame_orientation(self, frame):
         """調整畫面方向"""
         return self.image_processor.adjust_frame_orientation(
             frame, self.frame_rotation, self.flip_horizontal, self.flip_vertical
         )
-    
+
     def adjust_hand_landmarks_for_rotation(self, hand_landmarks, original_shape, rotated_shape):
         """調整手部特徵點座標"""
         return self.image_processor.adjust_hand_landmarks_for_rotation(
             hand_landmarks, original_shape, rotated_shape,
             self.frame_rotation, self.flip_horizontal, self.flip_vertical
-        )    
+        )
+
     def process_frame(self, frame):
         """處理單個影格"""
         current_time = time.time() * 1000
@@ -194,7 +198,8 @@ class AirMouse:
         # 繪製交互區域
         if self.show_preview:
             self.image_processor.draw_interaction_area(frame, CAMERA_AREA_RATIO, CAMERA_VERTICAL_OFFSET)
-          # 處理手勢
+        
+        # 處理手勢
         gesture = None
         if results.multi_hand_landmarks:
             hand_landmarks = results.multi_hand_landmarks[0]
@@ -223,7 +228,7 @@ class AirMouse:
             )
         
         return frame, gesture
-    
+
     def run(self):
         """運行 Air Mouse（命令行模式）"""
         try:
@@ -240,6 +245,11 @@ class AirMouse:
                 
                 # 檢測按鍵
                 key = cv2.waitKey(1) & 0xFF
+                
+                # 除錯：顯示按下的按鍵
+                if key != 255:  # 255 表示沒有按鍵
+                    print(f"[DEBUG] 按鍵檢測: key={key}, char='{chr(key) if 32 <= key <= 126 else 'special'}'")
+                
                 if key == 27:  # ESC鍵
                     break
                 elif key == ord('p') or key == ord('P'):
@@ -270,7 +280,7 @@ class AirMouse:
         
         finally:
             self.cleanup()
-    
+
     def cleanup(self):
         """清理資源"""
         if hasattr(self, 'cap') and self.cap.isOpened():
@@ -280,3 +290,6 @@ class AirMouse:
             self.gesture_detector.close()
         if hasattr(self, 'mouse_controller'):
             self.mouse_controller.cleanup()
+        # 清理按鍵監聽器
+        keyboard.unhook_all()
+        print("[DEBUG] 已清理按鍵監聽器")
