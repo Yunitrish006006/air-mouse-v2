@@ -5,3 +5,4 @@ mediapipe
 pyautogui
 tensorflow
 matplotlib
+pillow
