@@ -25,6 +25,11 @@ class MouseController:
         self.smoothing_factor = smoothing_factor
         self.last_move_time = 0
         self.min_move_interval = 8  # 最小移動間隔(毫秒)，提高響應速度
+        
+        # 抖動過濾參數
+        self.last_finger_pos = None  # 記錄上次手指位置
+        self.min_move_distance = 15  # 最小移動距離(像素)，小於此距離視為抖動
+        self.jitter_filter_enabled = True  # 是否啟用抖動過濾
 
     def control_mouse(self, hand_landmarks, frame_shape, gesture):
         """根據手的位置和手勢控制滑鼠"""
@@ -66,9 +71,22 @@ class MouseController:
             # 確保座標在螢幕範圍內
             screen_x = max(0, min(SCREEN_WIDTH - 1, screen_x))
             screen_y = max(0, min(SCREEN_HEIGHT - 1, screen_y))
-            
-            # 根據手勢類型決定是否使用平滑移動
+              # 根據手勢類型決定是否使用平滑移動
             if gesture == Gestures.MOVE:
+                # 抖動過濾：檢查手指移動距離
+                if self.jitter_filter_enabled and self.last_finger_pos is not None:
+                    # 計算手指在攝像頭畫面中的移動距離
+                    last_x, last_y = self.last_finger_pos
+                    finger_distance = ((finger_x - last_x) ** 2 + (finger_y - last_y) ** 2) ** 0.5
+                    
+                    # 如果移動距離小於閾值，視為抖動，不執行移動
+                    if finger_distance < self.min_move_distance:
+                        # print(f"[DEBUG] 抖動過濾: 移動距離 {finger_distance:.1f} < {self.min_move_distance}")
+                        return
+                
+                # 記錄當前手指位置
+                self.last_finger_pos = (finger_x, finger_y)
+                
                 # 移動時使用輕微平滑以避免抖動
                 current_x, current_y = pyautogui.position()
                 target_x = int(current_x + (screen_x - current_x) * 0.8)  # 提高平滑係數

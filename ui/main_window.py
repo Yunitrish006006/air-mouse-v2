@@ -66,8 +66,7 @@ class AirMouseUI:
         self._create_performance_settings(control_frame)
         self._create_orientation_settings(control_frame)
         self._create_status_display(control_frame)
-        self._create_gesture_help(control_frame)
-        
+        self._create_gesture_help(control_frame)        
         # 右側視頻顯示
         self._create_video_display(main_frame)
         
@@ -83,6 +82,15 @@ class AirMouseUI:
         # 空白鍵點擊按鈕（用於測試）
         self.click_button = ttk.Button(parent, text="測試點擊", command=self.test_click)
         self.click_button.pack(fill=tk.X, pady=5)
+        
+        # 顯示模式切換按鈕
+        self.show_hands_only = tk.BooleanVar(value=False)
+        self.display_mode_button = ttk.Checkbutton(
+            parent, 
+            text="只顯示手部位置", 
+            variable=self.show_hands_only,
+            command=self.toggle_display_mode        )
+        self.display_mode_button.pack(fill=tk.X, pady=5)
     
     def _create_performance_settings(self, parent):
         """建立效能設定介面"""
@@ -97,6 +105,27 @@ class AirMouseUI:
         self.fps_scale.pack(fill=tk.X, pady=5)
         self.fps_label = ttk.Label(perf_frame, text="50 FPS")
         self.fps_label.pack()
+        
+        # 抖動過濾設定
+        self.jitter_filter_enabled = tk.BooleanVar(value=True)
+        self.jitter_filter_button = ttk.Checkbutton(
+            perf_frame, 
+            text="啟用抖動過濾", 
+            variable=self.jitter_filter_enabled,
+            command=self.toggle_jitter_filter
+        )
+        self.jitter_filter_button.pack(fill=tk.X, pady=5)
+        
+        # 抖動過濾靈敏度
+        ttk.Label(perf_frame, text="抖動過濾靈敏度:").pack()
+        self.jitter_threshold_var = tk.IntVar(value=15)
+        self.jitter_threshold_scale = ttk.Scale(
+            perf_frame, from_=5, to=50, variable=self.jitter_threshold_var, 
+            orient=tk.HORIZONTAL, command=self.update_jitter_threshold
+        )
+        self.jitter_threshold_scale.pack(fill=tk.X, pady=5)
+        self.jitter_threshold_label = ttk.Label(perf_frame, text="15 像素")
+        self.jitter_threshold_label.pack()
     
     def _create_orientation_settings(self, parent):
         """建立畫面方向設定介面"""
@@ -164,6 +193,13 @@ class AirMouseUI:
         pyautogui.click(current_pos.x, current_pos.y, _pause=False)
         print(f"[UI TEST] 測試點擊: ({current_pos.x}, {current_pos.y})")
     
+    def toggle_display_mode(self):
+        """切換顯示模式：完整畫面 或 只顯示手部位置"""
+        if self.show_hands_only.get():
+            print("[UI] 切換到只顯示手部位置模式")
+        else:
+            print("[UI] 切換到完整畫面模式")
+    
     def toggle_tracking(self):
         """切換追蹤狀態"""
         if not self.is_running:
@@ -176,8 +212,7 @@ class AirMouseUI:
         self.is_running = True
         self.start_button.config(text="停止")
         self.status_label.config(text="運行中...")
-        
-        # 啟動視頻處理執行緒
+          # 啟動視頻處理執行緒
         self.video_thread = threading.Thread(target=self.video_loop, daemon=True)
         self.video_thread.start()
     
@@ -200,12 +235,20 @@ class AirMouseUI:
                 # 處理一幀影像
                 processed_frame, gesture = self.air_mouse.process_frame(frame)
                 
+                # 根據顯示模式處理影像
+                if self.show_hands_only.get():
+                    # 只顯示手部位置模式：創建黑色背景並只繪製手部
+                    display_frame = self.create_hands_only_frame(frame)
+                else:
+                    # 完整畫面模式
+                    display_frame = processed_frame
+                
                 # 更新手勢顯示
                 gesture_text = f"手勢: {gesture if gesture else '無'}"
                 self.root.after(0, lambda text=gesture_text: self.gesture_label.config(text=text))
                 
                 # 更新UI中的影像
-                self.update_video_display(processed_frame)
+                self.update_video_display(display_frame)
                 
         except Exception as e:
             print(f"視頻處理錯誤: {e}")
@@ -263,7 +306,6 @@ class AirMouseUI:
         if self.air_mouse.flip_vertical:
             orientation_text += " 垂直翻轉"
         self.orientation_label.config(text=orientation_text)
-    
     def update_gpu_status(self):
         """更新 GPU 狀態顯示"""
         gpu_status = self.air_mouse.gpu_detector.get_status_text()
@@ -279,6 +321,12 @@ class AirMouseUI:
         # 設定FPS
         self.air_mouse.frame_process_interval = int(1000 / fps)
         self.fps_var.set(fps)
+        
+        # 初始化抖動過濾設定
+        self.jitter_filter_enabled.set(True)
+        self.jitter_threshold_var.set(15)
+        self.toggle_jitter_filter()
+        self.update_jitter_threshold(15)
         
         # 更新顯示
         self.update_orientation_display()
@@ -298,8 +346,73 @@ class AirMouseUI:
         # 設定預設值（與 air_mouse.py 中一致）
         self.set_initial_settings()
         self.root.mainloop()
-
-
+    
+    def create_hands_only_frame(self, original_frame):
+        """創建只顯示手部位置的黑色背景圖像"""
+        # 調整畫面方向
+        frame = self.air_mouse.adjust_frame_orientation(original_frame)
+        frame_h, frame_w = frame.shape[:2]
+        
+        # 創建黑色背景
+        black_frame = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
+        
+        # 處理影像並檢測手部
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.air_mouse.gesture_detector.process_frame(rgb_frame)
+        
+        if results.multi_hand_landmarks:
+            # 繪製交互區域（綠色框）
+            from core.config import CAMERA_VERTICAL_OFFSET
+            margin_x = int(frame_w * (1 - CAMERA_AREA_RATIO) / 2)
+            margin_y = int(frame_h * (1 - CAMERA_AREA_RATIO) / 2)
+            
+            # 添加垂直偏移
+            offset_pixels = int(frame_h * CAMERA_VERTICAL_OFFSET)
+            top_y = margin_y + offset_pixels
+            bottom_y = frame_h - margin_y + offset_pixels
+            
+            # 確保邊界
+            top_y = max(0, top_y)
+            bottom_y = min(frame_h, bottom_y)
+            
+            cv2.rectangle(black_frame, (margin_x, top_y), 
+                         (frame_w - margin_x, bottom_y), (0, 255, 0), 2)
+            
+            # 繪製手部標記點（亮色）
+            for hand_landmarks in results.multi_hand_landmarks:
+                mp_drawing.draw_landmarks(
+                    black_frame, hand_landmarks, mp_hands.HAND_CONNECTIONS,
+                    mp_drawing_styles.get_default_hand_landmarks_style(),
+                    mp_drawing_styles.get_default_hand_connections_style())
+                
+                # 高亮食指尖端
+                index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
+                tip_x = int(index_tip.x * frame_w)
+                tip_y = int(index_tip.y * frame_h)
+                cv2.circle(black_frame, (tip_x, tip_y), 8, (255, 255, 0), -1)  # 黃色圓點
+        else:
+            # 沒有檢測到手部時，顯示提示文字
+            cv2.putText(black_frame, "No Hand Detected", 
+                       (frame_w//2 - 100, frame_h//2), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        
+        return black_frame
+    
+    def toggle_jitter_filter(self):
+        """切換抖動過濾功能"""
+        if hasattr(self.air_mouse, 'mouse_controller'):
+            self.air_mouse.mouse_controller.jitter_filter_enabled = self.jitter_filter_enabled.get()
+            status = "啟用" if self.jitter_filter_enabled.get() else "停用"
+            print(f"[UI] 抖動過濾: {status}")
+    
+    def update_jitter_threshold(self, value):
+        """更新抖動過濾靈敏度"""
+        threshold = int(float(value))
+        self.jitter_threshold_label.config(text=f"{threshold} 像素")
+        if hasattr(self.air_mouse, 'mouse_controller'):
+            self.air_mouse.mouse_controller.min_move_distance = threshold
+            print(f"[UI] 抖動過濾靈敏度: {threshold} 像素")
+    
 def main():
     """主程式入口點"""
     app = AirMouseUI()
