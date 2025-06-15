@@ -11,6 +11,7 @@ from PIL import Image, ImageTk
 import mediapipe as mp
 
 from core.air_mouse import AirMouse
+from core.gesture_recorder import GestureRecorder, GestureData, GestureAnalyzer
 from core.config import (
     UI_WINDOW_SIZE, UI_BG_COLOR, VIDEO_DISPLAY_SIZE,
     CAMERA_AREA_RATIO, CAMERA_VERTICAL_OFFSET
@@ -37,10 +38,12 @@ class AirMouseUI:
         self.style.configure('TLabel', background=UI_BG_COLOR, foreground='white')
         self.style.configure('TButton', padding=6)
         self.style.configure('TFrame', background=UI_BG_COLOR)
-        
-        # 初始化Air Mouse實例
+          # 初始化Air Mouse實例
         self.air_mouse = AirMouse()
         self.air_mouse.show_preview = True  # 強制啟用預覽以在UI中顯示
+        
+        # 初始化手勢錄入器
+        self.gesture_recorder = GestureRecorder()
         
         # 控制變數
         self.is_running = False
@@ -57,16 +60,16 @@ class AirMouseUI:
         # 主框架
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # 左側控制面板
+          # 左側控制面板
         control_frame = ttk.LabelFrame(main_frame, text="控制面板", padding=10)
         control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
         
         self._create_control_buttons(control_frame)
+        self._create_gesture_recording(control_frame)
         self._create_performance_settings(control_frame)
         self._create_orientation_settings(control_frame)
         self._create_status_display(control_frame)
-        self._create_gesture_help(control_frame)        
+        self._create_gesture_help(control_frame)
         # 右側視頻顯示
         self._create_video_display(main_frame)
         
@@ -82,15 +85,71 @@ class AirMouseUI:
         # 空白鍵點擊按鈕（用於測試）
         self.click_button = ttk.Button(parent, text="測試點擊", command=self.test_click)
         self.click_button.pack(fill=tk.X, pady=5)
-        
-        # 顯示模式切換按鈕
+          # 顯示模式切換按鈕
         self.show_hands_only = tk.BooleanVar(value=False)
         self.display_mode_button = ttk.Checkbutton(
             parent, 
             text="只顯示手部位置", 
             variable=self.show_hands_only,
-            command=self.toggle_display_mode        )
+            command=self.toggle_display_mode
+        )
         self.display_mode_button.pack(fill=tk.X, pady=5)
+    
+    def _create_gesture_recording(self, parent):
+        """建立手勢錄入介面"""
+        recording_frame = ttk.LabelFrame(parent, text="手勢錄入", padding=10)
+        recording_frame.pack(fill=tk.X, pady=10)
+        
+        # 手勢名稱輸入
+        ttk.Label(recording_frame, text="手勢名稱:").pack()
+        self.gesture_name_var = tk.StringVar(value="")
+        self.gesture_name_entry = ttk.Entry(recording_frame, textvariable=self.gesture_name_var)
+        self.gesture_name_entry.pack(fill=tk.X, pady=2)
+        
+        # 錄入控制按鈕
+        button_frame = ttk.Frame(recording_frame)
+        button_frame.pack(fill=tk.X, pady=5)
+        
+        self.record_button = ttk.Button(button_frame, text="開始錄入", command=self.start_gesture_recording)
+        self.record_button.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.stop_record_button = ttk.Button(button_frame, text="停止錄入", command=self.stop_gesture_recording, state=tk.DISABLED)
+        self.stop_record_button.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.cancel_record_button = ttk.Button(button_frame, text="取消", command=self.cancel_gesture_recording, state=tk.DISABLED)
+        self.cancel_record_button.pack(side=tk.LEFT)
+        
+        # 錄入狀態顯示
+        self.recording_status_label = ttk.Label(recording_frame, text="未錄入")
+        self.recording_status_label.pack(pady=2)
+        
+        # 已儲存手勢列表
+        ttk.Label(recording_frame, text="已儲存手勢:").pack(pady=(10, 0))
+        
+        # 手勢列表框架
+        list_frame = ttk.Frame(recording_frame)
+        list_frame.pack(fill=tk.X, pady=2)
+        
+        # 手勢選擇下拉選單
+        self.gesture_list_var = tk.StringVar()
+        self.gesture_list_combo = ttk.Combobox(list_frame, textvariable=self.gesture_list_var, state="readonly")
+        self.gesture_list_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        
+        # 手勢管理按鈕
+        manage_frame = ttk.Frame(recording_frame)
+        manage_frame.pack(fill=tk.X, pady=2)
+        
+        self.refresh_list_button = ttk.Button(manage_frame, text="重新整理", command=self.refresh_gesture_list)
+        self.refresh_list_button.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.delete_gesture_button = ttk.Button(manage_frame, text="刪除", command=self.delete_selected_gesture)
+        self.delete_gesture_button.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.analyze_gesture_button = ttk.Button(manage_frame, text="分析", command=self.analyze_selected_gesture)
+        self.analyze_gesture_button.pack(side=tk.LEFT)
+        
+        # 初始化手勢列表
+        self.refresh_gesture_list()
     
     def _create_performance_settings(self, parent):
         """建立效能設定介面"""
@@ -235,6 +294,21 @@ class AirMouseUI:
                 # 處理一幀影像
                 processed_frame, gesture = self.air_mouse.process_frame(frame)
                 
+                # 手勢錄入處理
+                if self.gesture_recorder.recording:
+                    # 轉換為RGB格式供MediaPipe使用
+                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    hand_detected, landmarks = self.gesture_recorder.process_frame(rgb_frame)
+                    
+                    # 更新錄入狀態
+                    status = self.gesture_recorder.get_recording_status()
+                    status_text = f"錄製中: {status['gesture_name']} ({status['frame_count']} 幀, {status['remaining_time']:.1f}s)"
+                    self.root.after(0, lambda text=status_text: self.recording_status_label.config(text=text))
+                    
+                    # 檢查是否錄製超時
+                    if status['remaining_time'] <= 0:
+                        self.root.after(0, self.stop_gesture_recording)
+                
                 # 根據顯示模式處理影像
                 if self.show_hands_only.get():
                     # 只顯示手部位置模式：創建黑色背景並只繪製手部
@@ -242,6 +316,12 @@ class AirMouseUI:
                 else:
                     # 完整畫面模式
                     display_frame = processed_frame
+                
+                # 在錄製時在畫面上顯示錄製狀態
+                if self.gesture_recorder.recording:
+                    cv2.putText(display_frame, "RECORDING", (10, 30), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    cv2.circle(display_frame, (30, 60), 10, (0, 0, 255), -1)  # 紅色錄製指示燈
                 
                 # 更新手勢顯示
                 gesture_text = f"手勢: {gesture if gesture else '無'}"
@@ -339,6 +419,7 @@ class AirMouseUI:
         
         # 釋放資源
         self.air_mouse.cleanup()
+        self.gesture_recorder.close()
         self.root.destroy()
     
     def run(self):
@@ -412,6 +493,118 @@ class AirMouseUI:
         if hasattr(self.air_mouse, 'mouse_controller'):
             self.air_mouse.mouse_controller.min_move_distance = threshold
             print(f"[UI] 抖動過濾靈敏度: {threshold} 像素")
+    
+    # ===== 手勢錄入相關方法 =====
+    
+    def start_gesture_recording(self):
+        """開始錄製手勢"""
+        gesture_name = self.gesture_name_var.get().strip()
+        if not gesture_name:
+            print("[UI] 請輸入手勢名稱")
+            return
+        
+        if self.gesture_recorder.start_recording(gesture_name):
+            self.record_button.config(state=tk.DISABLED)
+            self.stop_record_button.config(state=tk.NORMAL)
+            self.cancel_record_button.config(state=tk.NORMAL)
+            self.recording_status_label.config(text=f"錄製中: {gesture_name}")
+            print(f"[UI] 開始錄製手勢: {gesture_name}")
+        else:
+            print("[UI] 錄製失敗，可能正在錄製中")
+    
+    def stop_gesture_recording(self):
+        """停止錄製手勢"""
+        gesture_data = self.gesture_recorder.stop_recording()
+        
+        self.record_button.config(state=tk.NORMAL)
+        self.stop_record_button.config(state=tk.DISABLED)
+        self.cancel_record_button.config(state=tk.DISABLED)
+        
+        if gesture_data:
+            # 儲存手勢
+            if self.gesture_recorder.save_gesture(gesture_data):
+                self.recording_status_label.config(text=f"已儲存: {gesture_data.name}")
+                self.refresh_gesture_list()
+                self.gesture_name_var.set("")  # 清空輸入欄
+                print(f"[UI] 手勢錄製並儲存成功: {gesture_data.name}")
+            else:
+                self.recording_status_label.config(text="儲存失敗")
+                print("[UI] 手勢儲存失敗")
+        else:
+            self.recording_status_label.config(text="錄製失敗")
+            print("[UI] 手勢錄製失敗")
+    
+    def cancel_gesture_recording(self):
+        """取消錄製手勢"""
+        self.gesture_recorder.cancel_recording()
+        
+        self.record_button.config(state=tk.NORMAL)
+        self.stop_record_button.config(state=tk.DISABLED)
+        self.cancel_record_button.config(state=tk.DISABLED)
+        self.recording_status_label.config(text="已取消")
+        print("[UI] 手勢錄製已取消")
+    
+    def refresh_gesture_list(self):
+        """重新整理已儲存的手勢列表"""
+        saved_gestures = self.gesture_recorder.list_saved_gestures()
+        self.gesture_list_combo['values'] = saved_gestures
+        if saved_gestures:
+            self.gesture_list_combo.set(saved_gestures[0])
+        else:
+            self.gesture_list_combo.set("")
+        print(f"[UI] 手勢列表已更新: {len(saved_gestures)} 個手勢")
+    
+    def delete_selected_gesture(self):
+        """刪除選中的手勢"""
+        selected_gesture = self.gesture_list_var.get()
+        if not selected_gesture:
+            print("[UI] 請選擇要刪除的手勢")
+            return
+        
+        # 確認對話框
+        from tkinter import messagebox
+        result = messagebox.askyesno("確認刪除", f"確定要刪除手勢 '{selected_gesture}' 嗎？")
+        
+        if result:
+            if self.gesture_recorder.delete_gesture(selected_gesture):
+                self.refresh_gesture_list()
+                print(f"[UI] 已刪除手勢: {selected_gesture}")
+            else:
+                print(f"[UI] 刪除手勢失敗: {selected_gesture}")
+    
+    def analyze_selected_gesture(self):
+        """分析選中的手勢"""
+        selected_gesture = self.gesture_list_var.get()
+        if not selected_gesture:
+            print("[UI] 請選擇要分析的手勢")
+            return
+        
+        # 載入手勢資料
+        import os
+        filepath = os.path.join(self.gesture_recorder.save_dir, selected_gesture)
+        gesture_data = self.gesture_recorder.load_gesture(filepath)
+        
+        if gesture_data:
+            # 分析手勢
+            analysis = GestureAnalyzer.analyze_gesture(gesture_data)
+            
+            # 顯示分析結果
+            from tkinter import messagebox
+            analysis_text = f"""手勢分析結果: {gesture_data.name}
+            
+錄製時間: {gesture_data.timestamp}
+幀數: {analysis.get('frame_count', 0)}
+持續時間: {analysis.get('duration', 0):.2f} 秒
+移動範圍:
+  X軸: {analysis.get('movement_range', {}).get('x_range', 0):.3f}
+  Y軸: {analysis.get('movement_range', {}).get('y_range', 0):.3f}
+  Z軸: {analysis.get('movement_range', {}).get('z_range', 0):.3f}
+            """
+            
+            messagebox.showinfo("手勢分析", analysis_text)
+            print(f"[UI] 手勢分析完成: {selected_gesture}")
+        else:
+            print(f"[UI] 無法載入手勢: {selected_gesture}")
     
 def main():
     """主程式入口點"""
