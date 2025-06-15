@@ -23,9 +23,17 @@ class MouseController:
         self.smoothing_factor = smoothing_factor
         self.is_dragging = False
         self.position_history = deque(maxlen=3)
+        self.last_move_time = 0
+        self.min_move_interval = 8  # 最小移動間隔(毫秒)，提高響應速度
     
     def control_mouse(self, hand_landmarks, frame_shape, gesture):
         """根據手的位置和手勢控制滑鼠"""
+        current_time = time.time() * 1000
+        
+        # 限制移動頻率以避免過度操作
+        if gesture == Gestures.MOVE and (current_time - self.last_move_time) < self.min_move_interval:
+            return
+        
         # 獲取食指尖端的位置
         index_finger = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
         
@@ -35,34 +43,31 @@ class MouseController:
         margin_y = cam_height * (1 - CAMERA_AREA_RATIO) / 2
         
         # 檢查是否在交互區域內
-        in_area_x = margin_x < index_finger.x * cam_width < (cam_width - margin_x)
-        in_area_y = margin_y < index_finger.y * cam_height < (cam_height - margin_y)
-        
-        # 調試輸出（僅當檢測到手勢時）
-        if gesture:
-            finger_x = index_finger.x * cam_width
-            finger_y = index_finger.y * cam_height
-            print(f"[DEBUG] 手勢: {gesture}, 手指位置: ({finger_x:.1f}, {finger_y:.1f}), 在區域內: x={in_area_x}, y={in_area_y}")
+        finger_x = index_finger.x * cam_width
+        finger_y = index_finger.y * cam_height
+        in_area_x = margin_x < finger_x < (cam_width - margin_x)
+        in_area_y = margin_y < finger_y < (cam_height - margin_y)
         
         if in_area_x and in_area_y:
-            # 將攝像頭中心區域映射至全螢幕
-            screen_x = SCREEN_WIDTH * (index_finger.x * cam_width - margin_x) / (cam_width * CAMERA_AREA_RATIO)
-            screen_y = SCREEN_HEIGHT * (index_finger.y * cam_height - margin_y) / (cam_height * CAMERA_AREA_RATIO)
+            # 直接映射座標，減少計算延遲
+            screen_x = int(SCREEN_WIDTH * (finger_x - margin_x) / (cam_width * CAMERA_AREA_RATIO))
+            screen_y = int(SCREEN_HEIGHT * (finger_y - margin_y) / (cam_height * CAMERA_AREA_RATIO))
             
             # 確保座標在螢幕範圍內
             screen_x = max(0, min(SCREEN_WIDTH - 1, screen_x))
             screen_y = max(0, min(SCREEN_HEIGHT - 1, screen_y))
             
-            # 平滑移動滑鼠
-            current_x, current_y = pyautogui.position()
-            target_x = int(current_x + (screen_x - current_x) * self.smoothing_factor)
-            target_y = int(current_y + (screen_y - current_y) * self.smoothing_factor)
-            
-            if gesture:
-                print(f"[DEBUG] 螢幕座標: ({screen_x:.1f}, {screen_y:.1f}) -> 目標: ({target_x}, {target_y})")
-            
-            # 處理各種手勢
-            self._handle_gesture(gesture, target_x, target_y)
+            # 根據手勢類型決定是否使用平滑移動
+            if gesture == Gestures.MOVE:
+                # 移動時使用輕微平滑以避免抖動
+                current_x, current_y = pyautogui.position()
+                target_x = int(current_x + (screen_x - current_x) * 0.8)  # 提高平滑係數
+                target_y = int(current_y + (screen_y - current_y) * 0.8)
+                self._handle_gesture(gesture, target_x, target_y)
+                self.last_move_time = current_time
+            else:
+                # 其他手勢直接使用精確座標
+                self._handle_gesture(gesture, screen_x, screen_y)
     
     def _handle_gesture(self, gesture, x, y):
         """處理手勢動作"""
@@ -70,31 +75,25 @@ class MouseController:
             if self.is_dragging:
                 self.is_dragging = False
                 pyautogui.mouseUp()
-            pyautogui.moveTo(x, y)
-            print(f"[DEBUG] 移動滑鼠到: ({x}, {y})")
+            pyautogui.moveTo(x, y, _pause=False)  # 明確禁用暫停
         
         elif gesture == Gestures.LEFT_CLICK:
-            pyautogui.click(x, y)
-            print(f"[DEBUG] 左鍵點擊: ({x}, {y})")
+            pyautogui.click(x, y, _pause=False)
         
         elif gesture == Gestures.RIGHT_CLICK:
-            pyautogui.rightClick(x, y)
-            print(f"[DEBUG] 右鍵點擊: ({x}, {y})")
+            pyautogui.rightClick(x, y, _pause=False)
         
         elif gesture == Gestures.DRAG:
-            pyautogui.moveTo(x, y)
+            pyautogui.moveTo(x, y, _pause=False)
             if not self.is_dragging:
                 self.is_dragging = True
-                pyautogui.mouseDown()
-            print(f"[DEBUG] 拖曳到: ({x}, {y})")
+                pyautogui.mouseDown(_pause=False)
         
         elif gesture == Gestures.SCROLL_UP:
-            pyautogui.scroll(5)
-            print("[DEBUG] 向上滾動")
+            pyautogui.scroll(5, _pause=False)
         
         elif gesture == Gestures.SCROLL_DOWN:
-            pyautogui.scroll(-5)
-            print("[DEBUG] 向下滾動")
+            pyautogui.scroll(-5, _pause=False)
     
     def cleanup(self):
         """清理資源"""
