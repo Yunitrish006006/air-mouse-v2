@@ -73,24 +73,33 @@ class GestureDetector:
         self.finger_gesture_history.append(fingers_up)
         if len(self.finger_gesture_history) > GESTURE_HISTORY_LENGTH:
             self.finger_gesture_history.pop(0)
-        
-        # 基於最近幾幀計算穩定的手勢狀態
+          # 基於最近幾幀計算穩定的手勢狀態（降低門檻）
         stable_fingers_up = [0, 0, 0, 0, 0]
         for i in range(5):
             count_up = sum(history[i] for history in self.finger_gesture_history)
-            if count_up > len(self.finger_gesture_history) / 2:
+            # 降低穩定判斷門檻，只要有1/3的幀符合就認為是穩定的
+            threshold = max(1, len(self.finger_gesture_history) // 3)
+            if count_up >= threshold:
                 stable_fingers_up[i] = 1
-        
-        # 判斷基本手勢
+          # 判斷基本手勢
         current_time = time.time()
         gesture = None
         
-        # 只有食指伸直: 移動模式
-        if stable_fingers_up == [0, 1, 0, 0, 0]:
+        # 加入除錯輸出，顯示手指狀態
+        if len(self.finger_gesture_history) >= GESTURE_HISTORY_LENGTH:
+            print(f"[DEBUG] 手指狀態: {stable_fingers_up} (拇指,食指,中指,無名指,小指)")
+          # 根據實際偵測情況調整手勢判斷
+        # 當顯示 10111 時，表示只有食指彎曲（實際是只有食指伸直）
+        if stable_fingers_up == [1, 0, 1, 1, 1]:  # 實際上是只有食指伸直
             gesture = Gestures.MOVE
+            print(f"[DEBUG] 偵測到移動手勢: {stable_fingers_up}")
             
-        # 食指和中指都伸直: 可能是左鍵點擊或拖曳
-        elif stable_fingers_up == [0, 1, 1, 0, 0]:
+        # 原本的只有食指伸直判斷（以防萬一）
+        elif stable_fingers_up == [0, 1, 0, 0, 0]:
+            gesture = Gestures.MOVE
+            print(f"[DEBUG] 偵測到移動手勢(標準): {stable_fingers_up}")
+              # 食指和中指都伸直: 左鍵點擊
+        elif stable_fingers_up == [0, 1, 1, 0, 0] or stable_fingers_up == [1, 0, 0, 1, 1]:
             # 計算食指和中指的距離
             index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
             middle_tip = hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
@@ -102,27 +111,26 @@ class GestureDetector:
                 
                 if current_time - self.gesture_start_time > CLICK_TIME_THRESHOLD:
                     gesture = Gestures.LEFT_CLICK
+                    print(f"[DEBUG] 偵測到左鍵點擊: {stable_fingers_up}")
             else:
-                gesture = Gestures.DRAG  # 手指分開，表示拖曳
+                gesture = Gestures.MOVE  # 手指分開時移動，不是拖曳
+                print(f"[DEBUG] 偵測到移動手勢(食指中指分開): {stable_fingers_up}")
+          # 食指和大拇指都伸直: 拖曳模式
+        elif stable_fingers_up == [1, 1, 0, 0, 0] or stable_fingers_up == [0, 0, 1, 1, 1]:
+            gesture = Gestures.DRAG  # 直接設為拖曳，不檢查距離
+            print(f"[DEBUG] 偵測到拖曳: {stable_fingers_up}")
         
-        # 食指和大拇指都伸直: 可能是右鍵點擊
-        elif stable_fingers_up == [1, 1, 0, 0, 0]:
-            # 計算食指和大拇指的距離
-            index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-            thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
-            distance = np.sqrt((index_tip.x - thumb_tip.x)**2 + (index_tip.y - thumb_tip.y)**2)
+        # 三指伸直 (食指+中指+無名指): 右鍵點擊
+        elif stable_fingers_up == [0, 1, 1, 1, 0] or stable_fingers_up == [1, 0, 0, 0, 1]:
+            if self.prev_gesture != Gestures.RIGHT_CLICK:
+                self.gesture_start_time = current_time
             
-            if distance < FINGER_BENT_THRESHOLD:  # 手指接近，表示右鍵點擊
-                if self.prev_gesture != Gestures.RIGHT_CLICK:
-                    self.gesture_start_time = current_time
+            if current_time - self.gesture_start_time > CLICK_TIME_THRESHOLD:
+                gesture = Gestures.RIGHT_CLICK
+                print(f"[DEBUG] 偵測到右鍵點擊: {stable_fingers_up}")
                 
-                if current_time - self.gesture_start_time > CLICK_TIME_THRESHOLD:
-                    gesture = Gestures.RIGHT_CLICK
-            else:
-                gesture = Gestures.MOVE  # 預設為移動模式
-        
-        # 所有手指伸直: 可能是滾動
-        elif stable_fingers_up == [1, 1, 1, 1, 1]:
+        # 所有手指伸直或所有手指彎曲: 可能是滾動
+        elif stable_fingers_up == [1, 1, 1, 1, 1] or stable_fingers_up == [0, 0, 0, 0, 0]:
             if self.prev_hand_landmarks:
                 # 計算手部垂直移動方向
                 curr_y = hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_TIP].y
@@ -130,8 +138,10 @@ class GestureDetector:
                 
                 if curr_y < prev_y - 0.01:
                     gesture = Gestures.SCROLL_UP
+                    print(f"[DEBUG] 偵測到向上滾動: {stable_fingers_up}")
                 elif curr_y > prev_y + 0.01:
                     gesture = Gestures.SCROLL_DOWN
+                    print(f"[DEBUG] 偵測到向下滾動: {stable_fingers_up}")
         
         # 更新前一個手勢和手部地標
         self.prev_gesture = gesture

@@ -16,8 +16,7 @@ from .gpu_detector import GPUDetector
 from .gestures import GestureDetector, Gestures, mp_hands, mp_drawing, mp_drawing_styles
 from utils.image_processing import ImageProcessor
 
-class MouseController:
-    """滑鼠控制器"""
+class MouseController:    """滑鼠控制器"""
     
     def __init__(self, smoothing_factor=DEFAULT_SMOOTHING_FACTOR):
         self.smoothing_factor = smoothing_factor
@@ -38,11 +37,11 @@ class MouseController:
         in_area_x = margin_x < index_finger.x * cam_width < (cam_width - margin_x)
         in_area_y = margin_y < index_finger.y * cam_height < (cam_height - margin_y)
         
-        # 調試輸出（僅當檢測到手勢時）
-        if gesture:
-            finger_x = index_finger.x * cam_width
-            finger_y = index_finger.y * cam_height
-            print(f"[DEBUG] 手勢: {gesture}, 手指位置: ({finger_x:.1f}, {finger_y:.1f}), 在區域內: x={in_area_x}, y={in_area_y}")
+        # 調試輸出
+        finger_x = index_finger.x * cam_width
+        finger_y = index_finger.y * cam_height
+        print(f"[DEBUG] 手指位置: ({finger_x:.1f}, {finger_y:.1f}), 區域: ({margin_x:.1f}-{cam_width-margin_x:.1f}, {margin_y:.1f}-{cam_height-margin_y:.1f})")
+        print(f"[DEBUG] 在區域內: x={in_area_x}, y={in_area_y}, 手勢: {gesture}")
         
         if in_area_x and in_area_y:
             # 將攝像頭中心區域映射至全螢幕
@@ -58,8 +57,7 @@ class MouseController:
             target_x = int(current_x + (screen_x - current_x) * self.smoothing_factor)
             target_y = int(current_y + (screen_y - current_y) * self.smoothing_factor)
             
-            if gesture:
-                print(f"[DEBUG] 螢幕座標: ({screen_x:.1f}, {screen_y:.1f}) -> 目標: ({target_x}, {target_y})")
+            print(f"[DEBUG] 螢幕座標: ({screen_x:.1f}, {screen_y:.1f}) -> 目標: ({target_x}, {target_y})")
             
             # 處理各種手勢
             self._handle_gesture(gesture, target_x, target_y)
@@ -71,30 +69,24 @@ class MouseController:
                 self.is_dragging = False
                 pyautogui.mouseUp()
             pyautogui.moveTo(x, y)
-            print(f"[DEBUG] 移動滑鼠到: ({x}, {y})")
         
         elif gesture == Gestures.LEFT_CLICK:
             pyautogui.click(x, y)
-            print(f"[DEBUG] 左鍵點擊: ({x}, {y})")
         
         elif gesture == Gestures.RIGHT_CLICK:
             pyautogui.rightClick(x, y)
-            print(f"[DEBUG] 右鍵點擊: ({x}, {y})")
         
         elif gesture == Gestures.DRAG:
             pyautogui.moveTo(x, y)
             if not self.is_dragging:
                 self.is_dragging = True
                 pyautogui.mouseDown()
-            print(f"[DEBUG] 拖曳到: ({x}, {y})")
         
         elif gesture == Gestures.SCROLL_UP:
             pyautogui.scroll(5)
-            print("[DEBUG] 向上滾動")
         
         elif gesture == Gestures.SCROLL_DOWN:
             pyautogui.scroll(-5)
-            print("[DEBUG] 向下滾動")
     
     def cleanup(self):
         """清理資源"""
@@ -122,10 +114,12 @@ class AirMouse:
         self.show_preview = True
         self.use_gpu = True
         self.frame_process_interval = DEFAULT_FRAME_PROCESS_INTERVAL
-        self.last_process_time = 0        # 畫面方向控制（預設水平和垂直翻轉）
+        self.last_process_time = 0
+        
+        # 畫面方向控制
         self.frame_rotation = 0
-        self.flip_horizontal = True  # 預設開啟水平翻轉
-        self.flip_vertical = True   # 預設開啟垂直翻轉
+        self.flip_horizontal = False
+        self.flip_vertical = False
         
         # 平滑參數
         self.smoothing_factor = DEFAULT_SMOOTHING_FACTOR
@@ -155,22 +149,24 @@ class AirMouse:
         return self.image_processor.adjust_hand_landmarks_for_rotation(
             hand_landmarks, original_shape, rotated_shape,
             self.frame_rotation, self.flip_horizontal, self.flip_vertical
-        )    
+        )
+    
     def process_frame(self, frame):
         """處理單個影格"""
         current_time = time.time() * 1000
         should_process = (current_time - self.last_process_time) >= self.frame_process_interval
-        
-        # 在最開始就調整畫面方向（包括攝影機輸入翻轉）
-        frame = self.adjust_frame_orientation(frame)
         
         if not should_process:
             return frame, None
         
         self.last_process_time = current_time
         
-        # 現在frame已經是調整後的，這就是我們要使用的版本
-        frame_shape = frame.shape
+        # 儲存原始畫面形狀
+        original_shape = frame.shape
+        
+        # 調整畫面方向
+        frame = self.adjust_frame_orientation(frame)
+        rotated_shape = frame.shape
         
         # GPU 處理
         rgb_frame, gpu_success = self.image_processor.process_frame_with_gpu(
@@ -190,6 +186,13 @@ class AirMouse:
         gesture = None
         if results.multi_hand_landmarks:
             hand_landmarks = results.multi_hand_landmarks[0]
+            original_hand_landmarks = hand_landmarks  # 保存原始座標用於滑鼠控制
+            
+            # 調整手部特徵點座標（僅用於顯示）
+            if self.frame_rotation != 0 or self.flip_horizontal or self.flip_vertical:
+                hand_landmarks = self.adjust_hand_landmarks_for_rotation(
+                    hand_landmarks, original_shape, rotated_shape
+                )
             
             # 繪製手部標記點
             if self.show_preview:
@@ -199,12 +202,12 @@ class AirMouse:
                     mp_drawing_styles.get_default_hand_connections_style()
                 )
             
-            # 檢測手勢（使用當前座標）
+            # 檢測手勢（使用調整後的座標）
             gesture = self.gesture_detector.detect_gesture(hand_landmarks, frame.shape)
             
-            # 控制滑鼠（使用當前座標和當前形狀）
+            # 控制滑鼠（使用原始座標和原始形狀）
             if gesture:
-                self.mouse_controller.control_mouse(hand_landmarks, frame_shape, gesture)
+                self.mouse_controller.control_mouse(original_hand_landmarks, original_shape, gesture)
         
         # 繪製信息文字
         if self.show_preview:

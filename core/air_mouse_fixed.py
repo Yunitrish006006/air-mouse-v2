@@ -122,10 +122,12 @@ class AirMouse:
         self.show_preview = True
         self.use_gpu = True
         self.frame_process_interval = DEFAULT_FRAME_PROCESS_INTERVAL
-        self.last_process_time = 0        # 畫面方向控制（預設水平和垂直翻轉）
+        self.last_process_time = 0
+        
+        # 畫面方向控制
         self.frame_rotation = 0
-        self.flip_horizontal = True  # 預設開啟水平翻轉
-        self.flip_vertical = True   # 預設開啟垂直翻轉
+        self.flip_horizontal = False
+        self.flip_vertical = False
         
         # 平滑參數
         self.smoothing_factor = DEFAULT_SMOOTHING_FACTOR
@@ -155,22 +157,24 @@ class AirMouse:
         return self.image_processor.adjust_hand_landmarks_for_rotation(
             hand_landmarks, original_shape, rotated_shape,
             self.frame_rotation, self.flip_horizontal, self.flip_vertical
-        )    
+        )
+    
     def process_frame(self, frame):
         """處理單個影格"""
         current_time = time.time() * 1000
         should_process = (current_time - self.last_process_time) >= self.frame_process_interval
-        
-        # 在最開始就調整畫面方向（包括攝影機輸入翻轉）
-        frame = self.adjust_frame_orientation(frame)
         
         if not should_process:
             return frame, None
         
         self.last_process_time = current_time
         
-        # 現在frame已經是調整後的，這就是我們要使用的版本
-        frame_shape = frame.shape
+        # 儲存原始畫面形狀
+        original_shape = frame.shape
+        
+        # 調整畫面方向
+        frame = self.adjust_frame_orientation(frame)
+        rotated_shape = frame.shape
         
         # GPU 處理
         rgb_frame, gpu_success = self.image_processor.process_frame_with_gpu(
@@ -186,10 +190,18 @@ class AirMouse:
         # 繪製交互區域
         if self.show_preview:
             self.image_processor.draw_interaction_area(frame, CAMERA_AREA_RATIO)
-          # 處理手勢
+        
+        # 處理手勢
         gesture = None
         if results.multi_hand_landmarks:
             hand_landmarks = results.multi_hand_landmarks[0]
+            original_hand_landmarks = hand_landmarks  # 保存原始座標用於滑鼠控制
+            
+            # 調整手部特徵點座標（僅用於顯示）
+            if self.frame_rotation != 0 or self.flip_horizontal or self.flip_vertical:
+                hand_landmarks = self.adjust_hand_landmarks_for_rotation(
+                    hand_landmarks, original_shape, rotated_shape
+                )
             
             # 繪製手部標記點
             if self.show_preview:
@@ -199,12 +211,12 @@ class AirMouse:
                     mp_drawing_styles.get_default_hand_connections_style()
                 )
             
-            # 檢測手勢（使用當前座標）
+            # 檢測手勢（使用調整後的座標）
             gesture = self.gesture_detector.detect_gesture(hand_landmarks, frame.shape)
             
-            # 控制滑鼠（使用當前座標和當前形狀）
+            # 控制滑鼠（使用原始座標和原始形狀）
             if gesture:
-                self.mouse_controller.control_mouse(hand_landmarks, frame_shape, gesture)
+                self.mouse_controller.control_mouse(original_hand_landmarks, original_shape, gesture)
         
         # 繪製信息文字
         if self.show_preview:
