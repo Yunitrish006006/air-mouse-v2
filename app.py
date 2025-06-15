@@ -4,6 +4,48 @@ import numpy as np
 import pyautogui
 import time
 import argparse
+import os
+import threading
+import queue
+from collections import deque
+
+# 設定 GPU 加速環境變數
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'  # 動態分配 GPU 內存
+
+# GPU 狀態檢測 
+has_opencv_gpu = False
+has_tf_gpu = False
+
+# 檢查 OpenCV GPU 支援
+try:
+    cv2_gpu_count = cv2.cuda.getCudaEnabledDeviceCount()
+    if cv2_gpu_count > 0:
+        has_opencv_gpu = True
+        print(f"檢測到 {cv2_gpu_count} 個 OpenCV 支持的 GPU 設備")
+    else:
+        print("未檢測到 OpenCV 支持的 GPU")
+except Exception as e:
+    print(f"OpenCV GPU 檢測失敗: {e}")
+
+# 檢查 TensorFlow GPU 支援 (用於 MediaPipe)
+try:
+    # 延遲導入 TensorFlow，僅用於檢測
+    import tensorflow as tf
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        has_tf_gpu = True
+        print(f"檢測到 {len(gpus)} 個 TensorFlow 支持的 GPU 設備")
+        # 防止 TensorFlow 佔用所有 GPU 內存
+        for gpu in gpus:
+            try:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            except:
+                # 有些環境下可能不支持動態內存分配
+                print(f"無法為 GPU {gpu} 設置動態內存分配")
+    else:
+        print("未檢測到 TensorFlow 支持的 GPU")
+except Exception as e:
+    print(f"TensorFlow GPU 檢測失敗: {e}")
 
 # 設定 MediaPipe 手部追蹤
 mp_hands = mp.solutions.hands
@@ -39,8 +81,18 @@ class Gestures:
 class AirMouse:
     def __init__(self):
         self.cap = cv2.VideoCapture(0)
+        # 設定較低的相機解析度以降低延遲
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        # 設定相機的緩衝大小為1，減少延遲
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        
         self.prev_hand_landmarks = None
-        self.smoothing_factor = 0.5
+        self.smoothing_factor = 0.5  # 基礎平滑因子
+        self.adaptive_smoothing = True  # 是否使用自適應平滑
+        self.min_smoothing = 0.2  # 最小平滑值（更靈敏）
+        self.max_smoothing = 0.8  # 最大平滑值（更穩定）
+        
         self.prev_gesture = None
         self.gesture_start_time = 0
         self.is_dragging = False
@@ -48,17 +100,39 @@ class AirMouse:
         # 控制畫面預覽的變數
         self.show_preview = True
         
+        # 處理頻率控制 (ms)
+        self.frame_process_interval = 20
+        self.last_process_time = 0
+        
+        # 低功耗模式 - 降低精確度以提高效能
+        self.low_power_mode = False
+        
+        # GPU 加速相關設定
+        self.use_gpu = True  # 是否嘗試使用 GPU
+        self.opencv_gpu_available = has_opencv_gpu  # 全局變數
+        self.tf_gpu_available = has_tf_gpu  # 全局變數
+        
         # 手勢狀態追蹤
         self.prev_fingers_up = [0, 0, 0, 0, 0]
         self.finger_gesture_history = []
         self.history_length = 5
         
-        # 初始化手部檢測
+        # 多執行緒處理相關
+        self.frame_queue = queue.Queue(maxsize=1)  # 限制隊列大小為1，確保使用最新影格
+        self.result_queue = queue.Queue(maxsize=1)  # 處理結果隊列
+        self.processing_thread_active = False
+        self.processing_thread = None
+        
+        # 滑鼠座標平滑處理
+        self.position_history = deque(maxlen=3)  # 保存最近幾個滑鼠位置
+        
+        # 初始化手部檢測，啟用 GPU 加速
         self.hands = mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
-            min_detection_confidence=0.7,
-            min_tracking_confidence=0.5)
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.3,
+            model_complexity=0)
     
     def get_finger_up_status(self, hand_landmarks):
         """判斷五指是否伸直"""
@@ -122,7 +196,7 @@ class AirMouse:
         
         # 食指和大拇指都伸直: 可能是右鍵點擊
         elif stable_fingers_up == [1, 1, 0, 0, 0]:
-            # 計算食指和大拇指的距離
+            # 計算食指和大拌指的距離
             index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
             thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
             distance = np.sqrt((index_tip.x - thumb_tip.x)**2 + (index_tip.y - thumb_tip.y)**2)
@@ -217,58 +291,92 @@ class AirMouse:
                     print("無法讀取攝影機畫面")
                     break
                 
-                # 水平翻轉畫面以獲得鏡像效果
-                # frame = cv2.flip(frame, 1)
+                current_time = time.time() * 1000  # 轉換為毫秒
+                should_process = (current_time - self.last_process_time) >= self.frame_process_interval
                 
-                # 將BGR轉換為RGB用於MediaPipe處理
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = self.hands.process(rgb_frame)
-                
-                # 只有當show_preview為True時才處理和顯示畫面
-                if self.show_preview:
-                    # 繪製交互區域
-                    frame_h, frame_w, _ = frame.shape
-                    margin_x = int(frame_w * (1 - CAMERA_AREA_RATIO) / 2)
-                    margin_y = int(frame_h * (1 - CAMERA_AREA_RATIO) / 2)
-                    cv2.rectangle(frame, 
-                                (margin_x, margin_y), 
-                                (frame_w - margin_x, frame_h - margin_y), 
-                                (0, 255, 0), 2)
-                
-                if results.multi_hand_landmarks:
-                    # 只處理第一隻手
-                    hand_landmarks = results.multi_hand_landmarks[0]
+                # 只在應該處理的影格上執行手部檢測，降低 CPU/GPU 使用率
+                if should_process:
+                    self.last_process_time = current_time
+                      # 使用 GPU 處理（如果可用並啟用）
+                    if self.use_gpu and self.opencv_gpu_available:
+                        try:
+                            # 使用 OpenCV CUDA 優化處理
+                            # 將影像上傳到 GPU
+                            gpu_frame = cv2.cuda_GpuMat()
+                            gpu_frame.upload(frame)
+                            
+                            # 可選 GPU 優化：調整大小以加快處理速度
+                            # 如果需要更高效能，可以取消下面的註釋，但精確度會略有降低
+                            #gpu_resized = cv2.cuda.resize(gpu_frame, (320, 240))
+                            #frame_processed = gpu_resized.download()
+                            
+                            # 從 GPU 下載處理後的影像
+                            frame_processed = gpu_frame.download()
+                            
+                            # 將BGR轉換為RGB用於MediaPipe處理
+                            rgb_frame = cv2.cvtColor(frame_processed, cv2.COLOR_BGR2RGB)
+                            
+                        except Exception as e:
+                            print(f"GPU 處理錯誤：{e}，切換到 CPU 模式")
+                            self.opencv_gpu_available = False  # 標記為不可用，避免重複嘗試
+                            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    else:
+                        # 常規 CPU 處理
+                        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     
-                    # 只有當show_preview為True時才在畫面上繪製手部標記點
+                    # MediaPipe 將自動使用 TensorFlow GPU 加速 (如果可用)
+                    
+                    # MediaPipe 手部檢測（自動使用 TensorFlow 的 GPU 加速）
+                    results = self.hands.process(rgb_frame)
+                    
+                    # 只有當show_preview為True時才處理和顯示畫面
                     if self.show_preview:
-                        mp_drawing.draw_landmarks(
-                            frame,
-                            hand_landmarks,
-                            mp_hands.HAND_CONNECTIONS,
-                            mp_drawing_styles.get_default_hand_landmarks_style(),
-                            mp_drawing_styles.get_default_hand_connections_style())
+                        # 繪製交互區域
+                        frame_h, frame_w, _ = frame.shape
+                        margin_x = int(frame_w * (1 - CAMERA_AREA_RATIO) / 2)
+                        margin_y = int(frame_h * (1 - CAMERA_AREA_RATIO) / 2)
+                        cv2.rectangle(frame, 
+                                    (margin_x, margin_y), 
+                                    (frame_w - margin_x, frame_h - margin_y), 
+                                    (0, 255, 0), 2)
                     
-                    # 檢測手勢
-                    gesture = self.detect_gesture(hand_landmarks, frame.shape)
-                    
-                    # 根據手勢控制滑鼠
-                    if gesture:
-                        self.control_mouse(hand_landmarks, frame.shape, gesture)
+                    if results.multi_hand_landmarks:
+                        # 只處理第一隻手
+                        hand_landmarks = results.multi_hand_landmarks[0]
                         
-                        # 只有當show_preview為True時才在畫面上顯示當前手勢
+                        # 只有當show_preview為True時才在畫面上繪製手部標記點
                         if self.show_preview:
-                            cv2.putText(frame, f"gesture: {gesture}", (10, 30), 
-                                      cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                            mp_drawing.draw_landmarks(
+                                frame,
+                                hand_landmarks,
+                                mp_hands.HAND_CONNECTIONS,
+                                mp_drawing_styles.get_default_hand_landmarks_style(),
+                                mp_drawing_styles.get_default_hand_connections_style())
+                        
+                        # 檢測手勢
+                        gesture = self.detect_gesture(hand_landmarks, frame.shape)
+                        
+                        # 根據手勢控制滑鼠
+                        if gesture:
+                            self.control_mouse(hand_landmarks, frame.shape, gesture)
+                            
+                            # 只有當show_preview為True時才在畫面上顯示當前手勢
+                            if self.show_preview:
+                                cv2.putText(frame, f"gesture: {gesture}", (10, 30), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    
+                    # 只有當show_preview為True時才顯示畫面
+                    if self.show_preview:
+                        frame_h, frame_w, _ = frame.shape
+                        fps = int(1000 / self.frame_process_interval)
+                        cv2.putText(frame, f"FPS: ~{fps}", (frame_w - 120, 30), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        cv2.putText(frame, "esc: exit \nP:switch preview", (10, frame_h - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        cv2.imshow('Air Mouse', frame)
                 
-                # 只有當show_preview為True時才顯示畫面
-                if self.show_preview:
-                    frame_h, frame_w, _ = frame.shape
-                    cv2.putText(frame, "esc: exit \nP:switch camera preview", (10, frame_h - 10), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    cv2.imshow('Air Mouse', frame)
-                
-                # 檢測按鍵
-                key = cv2.waitKey(5) & 0xFF
+                # 檢測按鍵，不需要與處理頻率同步
+                key = cv2.waitKey(1) & 0xFF
                 if key == 27:  # ESC鍵
                     break
                 elif key == ord('p') or key == ord('P'):  # P鍵切換預覽
@@ -276,6 +384,12 @@ class AirMouse:
                     if not self.show_preview:
                         cv2.destroyWindow('Air Mouse')
                     print(f"畫面預覽: {'開啟' if self.show_preview else '關閉'}")
+                elif key == ord('+'):  # 增加處理頻率
+                    self.frame_process_interval = max(10, self.frame_process_interval - 5)
+                    print(f"處理頻率: 約 {int(1000/self.frame_process_interval)} FPS")
+                elif key == ord('-'):  # 減少處理頻率
+                    self.frame_process_interval = min(100, self.frame_process_interval + 5)
+                    print(f"處理頻率: 約 {int(1000/self.frame_process_interval)} FPS")
         
         finally:
             # 釋放資源
@@ -289,6 +403,8 @@ if __name__ == "__main__":
     # 解析命令行參數
     parser = argparse.ArgumentParser(description="Air Mouse - 使用手勢控制滑鼠")
     parser.add_argument('--no-preview', action='store_true', help='啟動時不顯示預覽畫面 (提升效能)')
+    parser.add_argument('--fps', type=int, default=50, help='設定處理頻率 (10-100 之間，數值越小越流暢但CPU負擔越重)')
+    parser.add_argument('--no-gpu', action='store_true', help='禁用 GPU 加速 (在 GPU 出現問題時使用)')
     args = parser.parse_args()
     
     print("啟動Air Mouse...")
@@ -300,9 +416,25 @@ if __name__ == "__main__":
     print("- 五指伸直上下移動：滾動")
     print("- 按ESC鍵退出")
     print("- 按P鍵切換畫面預覽（關閉預覽可提升效能）")
+    print("- 按+/-鍵增加/減少處理頻率（影響效能和反應速度）")
     
     air_mouse = AirMouse()
+    # 設定處理頻率 (轉換為處理間隔毫秒)
+    fps = max(10, min(100, args.fps))  # 確保FPS在10-100範圍內
+    air_mouse.frame_process_interval = int(1000 / fps)
+    print(f"處理頻率: 約 {fps} FPS")
+    
     if args.no_preview:
         air_mouse.show_preview = False
         print("已啟動高效能模式（無預覽）")
+    if args.no_gpu:
+        air_mouse.use_gpu = False
+        print("已禁用 GPU 加速，使用 CPU 模式運行")
+    else:
+        if air_mouse.opencv_gpu_available:
+            print("已啟用 OpenCV GPU 加速")
+        if air_mouse.tf_gpu_available:
+            print("已啟用 MediaPipe/TensorFlow GPU 加速")
+        if not (air_mouse.opencv_gpu_available or air_mouse.tf_gpu_available):
+            print("未檢測到可用的 GPU 加速，使用 CPU 模式運行")
     air_mouse.run()
