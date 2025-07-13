@@ -3,7 +3,6 @@ Air Mouse 主要功能模組
 """
 import cv2
 import time
-import pyautogui
 import keyboard
 import threading
 from collections import deque
@@ -13,7 +12,11 @@ import os
 # 添加 utils 模組到路徑
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from .config import *
+from .config import (get_pyautogui, SCREEN_WIDTH, SCREEN_HEIGHT, 
+                      CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_BUFFER_SIZE,
+                      CAMERA_AREA_RATIO, CAMERA_VERTICAL_OFFSET,
+                      DEFAULT_FRAME_PROCESS_INTERVAL, DEFAULT_SMOOTHING_FACTOR,
+                      MIN_SMOOTHING, MAX_SMOOTHING)
 from .gpu_detector import GPUDetector
 from .gestures import GestureDetector, Gestures, mp_hands, mp_drawing, mp_drawing_styles
 from utils.image_processing import ImageProcessor
@@ -88,6 +91,7 @@ class MouseController:
                 self.last_finger_pos = (finger_x, finger_y)
                 
                 # 移動時使用輕微平滑以避免抖動
+                pyautogui = get_pyautogui()
                 current_x, current_y = pyautogui.position()
                 target_x = int(current_x + (screen_x - current_x) * 0.8)  # 提高平滑係數
                 target_y = int(current_y + (screen_y - current_y) * 0.8)
@@ -99,6 +103,7 @@ class MouseController:
 
     def _handle_gesture(self, gesture, x, y):
         """處理手勢動作"""
+        pyautogui = get_pyautogui()
         if gesture == Gestures.MOVE:
             # 移動模式：只移動滑鼠指標
             pyautogui.moveTo(x, y, _pause=False)
@@ -148,22 +153,37 @@ class AirMouse:
         
         # 按鍵監聽
         self.space_pressed = False
+        self.keyboard_available = False
         self.setup_keyboard_listener()
 
     def setup_keyboard_listener(self):
-        """設定全域按鍵監聽器"""
-        def on_space_press():
-            if not self.space_pressed:
-                self.space_pressed = True
-                # 在目前滑鼠位置點擊左鍵
-                current_pos = pyautogui.position()
-                pyautogui.click(current_pos.x, current_pos.y, _pause=False)
-                print(f"[DEBUG] 空白鍵點擊: ({current_pos.x}, {current_pos.y})")
-                # 重置狀態
-                threading.Timer(0.1, lambda: setattr(self, 'space_pressed', False)).start()
-        
-        # 註冊空白鍵監聽
-        keyboard.on_press_key('space', lambda _: on_space_press())
+        """設定全域按鍵監聽器（可選）"""
+        try:
+            def on_space_press():
+                if not self.space_pressed:
+                    self.space_pressed = True
+                    # 在目前滑鼠位置點擊左鍵
+                    pyautogui = get_pyautogui()
+                    current_pos = pyautogui.position()
+                    pyautogui.click(current_pos.x, current_pos.y, _pause=False)
+                    print(f"[DEBUG] 空白鍵點擊: ({current_pos.x}, {current_pos.y})")
+                    # 重置狀態
+                    threading.Timer(0.1, lambda: setattr(self, 'space_pressed', False)).start()
+            
+            # 註冊空白鍵監聽
+            keyboard.on_press_key('space', lambda _: on_space_press())
+            self.keyboard_available = True
+            print("[INFO] 空白鍵監聽已啟用")
+        except ImportError as e:
+            if "root" in str(e).lower():
+                print("[WARNING] 無法啟用全域按鍵監聽：需要 root 權限")
+                print("[INFO] 請使用 sudo 執行程序，或者使用 GUI 中的點擊按鈕")
+            else:
+                print(f"[WARNING] 無法啟用按鍵監聽: {e}")
+            self.keyboard_available = False
+        except Exception as e:
+            print(f"[WARNING] 設定按鍵監聽時發生錯誤: {e}")
+            self.keyboard_available = False
 
     @property
     def opencv_gpu_available(self):
@@ -311,3 +331,15 @@ class AirMouse:
         # 清理按鍵監聽器
         keyboard.unhook_all()
         print("[DEBUG] 已清理按鍵監聽器")
+    
+    def manual_click(self):
+        """手動點擊（用於 GUI 按鈕）"""
+        try:
+            pyautogui = get_pyautogui()
+            current_pos = pyautogui.position()
+            pyautogui.click(current_pos.x, current_pos.y, _pause=False)
+            print(f"[INFO] 手動點擊: ({current_pos.x}, {current_pos.y})")
+            return True
+        except Exception as e:
+            print(f"[ERROR] 手動點擊失敗: {e}")
+            return False

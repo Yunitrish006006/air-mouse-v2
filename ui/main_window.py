@@ -52,6 +52,9 @@ class AirMouseUI:
         # 建立UI
         self.create_widgets()
         
+        # 更新鍵盤狀態顯示
+        self.update_keyboard_status()
+        
         # 綁定關閉事件
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
     
@@ -82,10 +85,15 @@ class AirMouseUI:
         self.start_button = ttk.Button(parent, text="啟動", command=self.toggle_tracking)
         self.start_button.pack(fill=tk.X, pady=5)
         
-        # 空白鍵點擊按鈕（用於測試）
-        self.click_button = ttk.Button(parent, text="測試點擊", command=self.test_click)
+        # 手動點擊按鈕
+        self.click_button = ttk.Button(parent, text="手動點擊", command=self.test_click)
         self.click_button.pack(fill=tk.X, pady=5)
-          # 顯示模式切換按鈕
+        
+        # 鍵盤狀態顯示
+        self.keyboard_status_label = ttk.Label(parent, text="檢查鍵盤狀態中...")
+        self.keyboard_status_label.pack(fill=tk.X, pady=2)
+        
+        # 顯示模式切換按鈕
         self.show_hands_only = tk.BooleanVar(value=False)
         self.display_mode_button = ttk.Checkbutton(
             parent, 
@@ -247,10 +255,14 @@ class AirMouseUI:
     
     def test_click(self):
         """測試點擊功能"""
-        import pyautogui
-        current_pos = pyautogui.position()
-        pyautogui.click(current_pos.x, current_pos.y, _pause=False)
-        print(f"[UI TEST] 測試點擊: ({current_pos.x}, {current_pos.y})")
+        try:
+            from core.config import get_pyautogui
+            pyautogui = get_pyautogui()
+            current_pos = pyautogui.position()
+            pyautogui.click(current_pos.x, current_pos.y, _pause=False)
+            print(f"[UI TEST] 測試點擊: ({current_pos.x}, {current_pos.y})")
+        except Exception as e:
+            print(f"[UI TEST] 測試點擊失敗: {e}")
     
     def toggle_display_mode(self):
         """切換顯示模式：完整畫面 或 只顯示手部位置"""
